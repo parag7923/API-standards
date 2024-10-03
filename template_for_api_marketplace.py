@@ -1,36 +1,44 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import os
+import random
 import json
-import time
-import threading
-import requests
+from dotenv import load_dotenv
 import uuid
 import datetime
-import os
-import json
-# from dotenv import load_dotenv
+import requests
+import threading
+
 app = Flask(__name__)
-from utils.version import API_VERSION, SERVICE_NAME
-from utils.status_codes import StatusCodes
-from uuid import uuid4
-from api.models import response_template
+CORS(app)
 
 # Load environment variables
-# load_dotenv()  # Take environment variables from.env.
-app.config.from_object(__name__)  # Load config from object
+load_dotenv()
+
+# SambaNova API credentials
+sambanova_api_key = os.getenv('SAMBANOVA_API_KEY')
+sambanova_api_url = os.getenv('SAMBANOVA_API_URL')
+
+# Spotify API credentials
+spotify_client_id = os.getenv('SPOTIFY_CLIENT_ID')
+spotify_client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
+
+# Spotify authentication
+auth_manager = SpotifyClientCredentials(client_id=spotify_client_id, client_secret=spotify_client_secret)
+sp = spotipy.Spotify(auth_manager=auth_manager)
+
+# Webhook URL (if applicable)
+webhook_url = "http://localhost:8000/callback"  # Replace with your webhook URL if needed
 
 # Load JSON configuration
 with open('config.json') as f:
     config = json.load(f)
 
 ############### ENV VARIABLES ###############
-SUPPORTED_METHOD = ["example_method","another_method"]#["AudioCraft"]
+SUPPORTED_METHOD = ["example_method", "another_method"]
 PROMT_LEN = 10
-
-
-############### ADD THE AI MARKETPLACE WEBHOOK ENDPOINT HERE ###############
-webhook_url = "http://localhost:8000/callback"
-# webhook_url = "https://mkpl-user.staging.devsaitech.com/api/v1/ai-connection/callback"
-
 
 ############### ADD YOUR CUSTOM AI AGENT CALL HERE ###############
 def hello_world():
@@ -41,7 +49,81 @@ def hello_world():
     datatype = "META_DATA"
     return "Hello World", processing_duration, datatype
 
+############### FUNCTION TO DETECT EMOTION USING SAMBANOVA API ###############
+def detect_emotion(text):
+    try:
+        headers = {
+            'Authorization': f'Bearer {sambanova_api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = json.dumps({"text": text})
+        response = requests.post(sambanova_api_url, headers=headers, data=payload)
+        response_data = response.json()
+        emotion = response_data.get('emotion', 'unknown').lower()
+        return emotion
+    except Exception as e:
+        print(f"Error detecting emotion: {e}")
+        return "unknown"
 
+############### FUNCTION TO FIND SPOTIFY PLAYLISTS BASED ON KEYWORD ###############
+def find_playlists_for_keyword(keyword, limit=10):
+    try:
+        random_queries = [f"{keyword} playlist", f"best {keyword} playlists", f"{keyword} hits"]
+        query = random.choice(random_queries)
+        results = sp.search(q=query, type='playlist', limit=limit)
+        playlists = results['playlists']['items']
+        return [{
+            'name': playlist['name'],
+            'description': playlist['description'],
+            'link': playlist['external_urls']['spotify']
+        } for playlist in playlists]
+    except Exception as e:
+        print(f"Error finding playlists: {e}")
+        return []
+
+############### FUNCTION TO FIND SPOTIFY PLAYLISTS BASED ON EMOTION ###############
+def find_playlists_for_emotion(emotion, limit=10):
+    emotion_to_query = {
+        "joy": "happy",
+        "anger": "angry",
+        "fear": "fearful",
+        "sadness": "sad",
+        "surprise": "surprised",
+        "disgust": "disgusted",
+        "trust": "trusting",
+        "anticipation": "anticipating",
+        "boredom": "bored",
+        "frustration": "frustrated",
+        "confusion": "confused",
+        "excitement": "excited",
+        "contentment": "content",
+        "relief": "relieved",
+        "nostalgia": "nostalgic",
+        "pride": "proud",
+        "guilt": "guilty",
+        "shame": "ashamed",
+        "embarrassment": "embarrassed",
+        "hope": "hopeful",
+        "unknown": "mood",
+        "mixed": "mixed emotions",
+        "indifference": "indifferent"
+    }
+
+    query = emotion_to_query.get(emotion, "mood")
+    
+    try:
+        random_queries = [f"{query} playlist", f"best {query} playlists", f"{query} hits"]
+        query = random.choice(random_queries)
+        results = sp.search(q=query, type='playlist', limit=limit)
+        playlists = results['playlists']['items']
+        return [{
+            'name': playlist['name'],
+            'description': playlist['description'],
+            'link': playlist['external_urls']['spotify']
+        } for playlist in playlists]
+    except Exception as e:
+        print(f"Error finding playlists: {e}")
+        return []
 
 ############### CHECK IF ALL INFORMATION IS IN REQUEST ###############
 def check_input_request(request):
@@ -49,33 +131,31 @@ def check_input_request(request):
     status = ""
     user_id = request.headers.get('X-User-ID', None)
     if user_id is None or not user_id.strip():
-        status = StatusCodes.INVALID_REQUEST
+        status = "INVALID_REQUEST"
         reason = "userToken is invalid"
+    
     request_id = request.headers.get('x-request-id', None)
     request_data = request.get_json()
-    print(request_data)
-    respose_data = None
-
-    method = request_data['method']
-    print(method)
+    
     if request_id is None or not request_id.strip():
-        status = StatusCodes.INVALID_REQUEST
+        status = "INVALID_REQUEST"
         reason = "requestId is invalid"
-    if method is None or not method.strip():
-        status = StatusCodes.INVALID_REQUEST
-        reason = "method is invalid"
-    elif method not in SUPPORTED_METHOD:
-        status = StatusCodes.UNSUPPORTED
-        reason = f"unsupported method {method}"
     if status != "":
-        trace_id = uuid4().hex
+        trace_id = uuid.uuid4().hex
         error_code = {
             "status": status,
             "reason": reason
         }
-        respose_data = response_template(request_id, trace_id, -1,True, {}, error_code)
-        
-    return respose_data
+        response_data = {
+            "requestId": request_id,
+            "traceId": trace_id,
+            "processDuration": -1,
+            "isResponseImmediate": True,
+            "response": {},
+            "errorCode": error_code
+        }
+        return response_data
+    return None
 
 ############### API ENDPOINT TO RECEIVE REQUEST ###############
 @app.route('/call', methods=['POST'])
@@ -85,7 +165,7 @@ def call_endpoint():
     method = request_data.get('method')
     ret = check_input_request(request)
     if ret is not None:
-        return ret
+        return jsonify(ret), 400
 
     task_id = str(uuid.uuid4())
     requestId = str(uuid.uuid4())
@@ -93,47 +173,35 @@ def call_endpoint():
     if method == "example_method":
         # Response preparation
         response = {"taskId": task_id}
-        error_code = {"status": StatusCodes.PENDING, "reason": "Pending"}
-        respose_data = response_template(requestId, trace_id, -1, False, response, error_code)
+        error_code = {"status": "PENDING", "reason": "Pending"}
+        respose_data = {
+            "requestId": requestId,
+            "traceId": trace_id,
+            "processDuration": -1,
+            "isResponseImmediate": False,
+            "response": response,
+            "errorCode": error_code
+        }
 
         # Task processing in a separate thread
-        threading.Thread(target=process_task, args=(task_id,requestId,user_id,)).start()
+        threading.Thread(target=process_task, args=(task_id, requestId, user_id)).start()
 
     # Immediate response to the client
     return jsonify(respose_data), 200
 
-
 ############### PROCESS THE CALL TASK HERE ###############
-def success_response(task_id, data, dataType, requestId, trace_id, process_duration):
-        # Prepare the response
-        response = {
-            "taskId": task_id,  # Assuming task_id is defined somewhere
-            "data": data,
-            "dataType": dataType
-        }
-        error_code = {"status": StatusCodes.SUCCESS, "reason": "success"}
-        response_data = response_template(requestId, trace_id, process_duration, True, response, error_code)
-        return response_data
-
-
-
-def process_task(task_id,requestId, user_id):
+def process_task(task_id, requestId, user_id):
     data, processing_duration, datatype = hello_world()
-    print(data)
     # Send the callback
-    send_callback(user_id, task_id,requestId,processing_duration, data, datatype)
+    send_callback(user_id, task_id, requestId, processing_duration, data, datatype)
 
-            
 ############### SEND CALLBACK TO YOUR APP MARKETPLACE ENDPOINT WITH TASK RESPONSE ###############
-
-# dataType can only be one of "META_DATA", "HYBRID" or "S3_OBJECT"
-def send_callback(user_id, task_id,requestId, processing_duration, data, datatype):
-    
+def send_callback(user_id, task_id, requestId, processing_duration, data, datatype):
     callback_message = {
-        "apiVersion": API_VERSION,
-        "service": SERVICE_NAME,
+        "apiVersion": "1.0",
+        "service": "EmotionMusicPlayer",
         "datetime": datetime.datetime.now().isoformat(),
-        "processDuration": processing_duration,  # Simulated duration
+        "processDuration": processing_duration,
         "taskId": task_id,
         "isResponseImmediate": False,
         "response": {
@@ -155,52 +223,67 @@ def send_callback(user_id, task_id,requestId, processing_duration, data, datatyp
 
     response = requests.post(webhook_url, json=callback_message, headers=headers)
 
+############### /GET_PLAYLIST ENDPOINT ###############
+@app.route('/get_playlist', methods=['POST'])
+def get_playlist():
+    ret = check_input_request(request)
+    if ret is not None:
+        return jsonify(ret), 400
 
+    data = request.json
+    user_text = data.get('text', '')
 
+    if not user_text:
+        return jsonify({"error": "No text provided"}), 400
 
-
-############### WHEN THIS API ENDPOINT IS PINGED WITH A TASKID IT RETURNS THE TASK STATUS AND DATA ###############
-
-###### USE YOUR OWN DATABASE TO STORE TASKID : RESULT ######
-@app.route('/result', methods=['POST'])
-def result():
-    user_id = request.headers.get('X-User-ID', None)
-    requestId = request.headers.get('x-request-id', None)
-    request_data = request.get_json()
-    taskID = request_data.get("taskId")
-    trace_id = str(uuid.uuid4())
-    result_request_id = str(uuid.uuid4())
-    if user_id is None or not user_id.strip():
-        error_code = {"status": StatusCodes.ERROR, "reason": "No User ID found in headers"}
-        response_data = response_template(result_request_id, trace_id, -1, True, {}, error_code)
-        return response_data
-
-    if requestId is None or not requestId.strip():
-        error_code = {"status": StatusCodes.ERROR, "reason": "No request ID found in headers"}
-        response_data = response_template(result_request_id, trace_id, -1, True, {}, error_code)
-        return response_data
+    # Detect emotion from the text
+    emotion = detect_emotion(user_text)
     
-    if taskID is None or not taskID.strip():
-        error_code = {"status": StatusCodes.ERROR, "reason": "No task ID found in body"}
-        response_data = response_template(result_request_id, trace_id, -1, True, {}, error_code)
-        return response_data
+    # Find playlists based on emotion and keyword
+    emotion_playlists = find_playlists_for_emotion(emotion)
+    keyword_playlists = find_playlists_for_keyword(user_text)
 
-    # print(taskID)
-    data = {
-        "dataType": 'META_DATA',
-        "data": "stored-data"
+    # Combine and randomize the playlists
+    all_playlists = emotion_playlists + keyword_playlists
+    random.shuffle(all_playlists)
+    
+    # Select up to 4 playlists
+    selected_playlists = all_playlists[:4]
+
+    response = {
+        "playlists": selected_playlists
     }
-    response_data = success_response(
-        taskID, data, requestId, trace_id, -1
-    )
-    # print(data)
-    return jsonify(response_data), 200
 
+    # Send callback if needed
+    def send_callback(response):
+        callback_message = {
+            "apiVersion": "1.0",
+            "service": "EmotionMusicPlayer",
+            "datetime": datetime.datetime.now().isoformat(),
+            "processDuration": 0,
+            "taskId": str(uuid.uuid4()),
+            "isResponseImmediate": True,
+            "response": response,
+            "errorCode": {
+                "status": "SUCCESS",
+                "reason": "Success"
+            }
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-request-id": str(uuid.uuid4()),
+            "x-user-id": data.get('user_id', 'anonymous')
+        }
+        requests.post(webhook_url, json=callback_message, headers=headers)
+    
+    threading.Thread(target=send_callback, args=(response,)).start()
 
+    return jsonify(response)
 
+############### INDEX ROUTE ###############
+@app.route('/')
+def index():
+    return app.send_static_file('index.html')
 
-
-
-############### RUN YOUR SERVER HERE ###############
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
